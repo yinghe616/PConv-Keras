@@ -79,7 +79,7 @@ class PConvUnet(object):
         # INPUTS
         inputs_img = Input((self.img_rows, self.img_cols, 3), name='inputs_img')
         inputs_mask = Input((self.img_rows, self.img_cols, 3), name='inputs_mask')
-        
+        inputs_mask_def = Input((self.img_rows, self.img_cols, 3), name='inputs_mask_def')
         # ENCODER
         def encoder_layer(img_in, mask_in, filters, kernel_size, bn=True):
             conv, mask = PConv2D(filters, kernel_size, strides=2, padding='same')([img_in, mask_in])
@@ -94,10 +94,10 @@ class PConvUnet(object):
         e_conv2, e_mask2 = encoder_layer(e_conv1, e_mask1, 128, 5)
         e_conv3, e_mask3 = encoder_layer(e_conv2, e_mask2, 256, 5)
         e_conv4, e_mask4 = encoder_layer(e_conv3, e_mask3, 512, 3)
-        e_conv5, e_mask5 = encoder_layer(e_conv4, e_mask4, 512, 3)
-        e_conv6, e_mask6 = encoder_layer(e_conv5, e_mask5, 512, 3)
-        e_conv7, e_mask7 = encoder_layer(e_conv6, e_mask6, 512, 3)
-        e_conv8, e_mask8 = encoder_layer(e_conv7, e_mask7, 512, 3)
+        #e_conv5, e_mask5 = encoder_layer(e_conv4, e_mask4, 512, 3)
+        #e_conv6, e_mask6 = encoder_layer(e_conv5, e_mask5, 512, 3)
+        #e_conv7, e_mask7 = encoder_layer(e_conv6, e_mask6, 512, 3)
+        #e_conv8, e_mask8 = encoder_layer(e_conv7, e_mask7, 512, 3)
         
         # DECODER
         def decoder_layer(img_in, mask_in, e_conv, e_mask, filters, kernel_size, bn=True):
@@ -111,28 +111,29 @@ class PConvUnet(object):
             conv = LeakyReLU(alpha=0.2)(conv)
             return conv, mask
             
-        d_conv9, d_mask9 = decoder_layer(e_conv8, e_mask8, e_conv7, e_mask7, 512, 3)
-        d_conv10, d_mask10 = decoder_layer(d_conv9, d_mask9, e_conv6, e_mask6, 512, 3)
-        d_conv11, d_mask11 = decoder_layer(d_conv10, d_mask10, e_conv5, e_mask5, 512, 3)
-        d_conv12, d_mask12 = decoder_layer(d_conv11, d_mask11, e_conv4, e_mask4, 512, 3)
-        d_conv13, d_mask13 = decoder_layer(d_conv12, d_mask12, e_conv3, e_mask3, 256, 3)
+        #d_conv9, d_mask9 = decoder_layer(e_conv8, e_mask8, e_conv7, e_mask7, 512, 3)
+        #d_conv10, d_mask10 = decoder_layer(d_conv9, d_mask9, e_conv6, e_mask6, 512, 3)
+        #d_conv11, d_mask11 = decoder_layer(d_conv10, d_mask10, e_conv5, e_mask5, 512, 3)
+        #d_conv12, d_mask12 = decoder_layer(d_conv11, d_mask11, e_conv4, e_mask4, 512, 3)
+        #d_conv13, d_mask13 = decoder_layer(d_conv12, d_mask12, e_conv3, e_mask3, 256, 3)
+        d_conv13, d_mask13 = decoder_layer(e_conv4, e_mask4, e_conv3, e_mask3, 256, 3)
         d_conv14, d_mask14 = decoder_layer(d_conv13, d_mask13, e_conv2, e_mask2, 128, 3)
         d_conv15, d_mask15 = decoder_layer(d_conv14, d_mask14, e_conv1, e_mask1, 64, 3)
         d_conv16, d_mask16 = decoder_layer(d_conv15, d_mask15, inputs_img, inputs_mask, 3, 3, bn=False)
         outputs = Conv2D(3, 1, activation = 'sigmoid', name='outputs_img')(d_conv16)        
         
         # Setup the model inputs / outputs
-        model = Model(inputs=[inputs_img, inputs_mask], outputs=outputs)
+        model = Model(inputs=[inputs_img, inputs_mask,inputs_mask_def], outputs=outputs)
 
         # Compile the model
         model.compile(
             optimizer = Adam(lr=lr),
-            loss=self.loss_total(inputs_mask)
+            loss=self.loss_total(inputs_mask,inputs_mask_def)
         )
 
         return model
     
-    def loss_total(self, mask):
+    def loss_total(self, mask,mask0):
         """
         Creates a loss function which sums all the loss components 
         and multiplies by their weights. See paper eq. 7.
@@ -149,14 +150,14 @@ class PConvUnet(object):
             
             # Compute loss components
             l1 = self.loss_valid(mask, y_true, y_pred)
-            l2 = self.loss_hole(mask, y_true, y_pred)
+            l2 = self.loss_hole(mask*mask0, y_true, y_pred)
             l3 = self.loss_perceptual(vgg_out, vgg_gt, vgg_comp)
             l4 = self.loss_style(vgg_out, vgg_gt)
             l5 = self.loss_style(vgg_comp, vgg_gt)
             l6 = self.loss_tv(mask, y_comp)
             
             # Return loss function
-            return l1 + 6*l2 + 0.05*l3 + 120*(l4+l5) + 0.1*l6
+            return l1 + 6*l2 #+ 0.05*l3 + 120*(l4+l5) + 0.1*l6
 
         return loss
     
@@ -298,13 +299,15 @@ class PConvUnet(object):
         # Only run on a single image at a time
         img = sample[0]
         mask = sample[1]
+        mask0 = sample[2]
         assert len(img.shape) == 3, "Image dimension expected to be (H, W, C)"
         assert len(mask.shape) == 3, "Image dimension expected to be (H, W, C)"
         
         # Chunk up, run prediction, and reconstruct
         chunked_images = self.dimension_preprocess(img)
         chunked_masks = self.dimension_preprocess(mask)
-        pred_imgs = self.predict([chunked_images, chunked_masks], **kwargs)
+        chunked_masks0 = self.dimension_preprocess(mask0)
+        pred_imgs = self.predict([chunked_images,chunked_masks, chunked_masks0], **kwargs)
         reconstructed_image = self.dimension_postprocess(pred_imgs, img)
         
         # Return single reconstructed image
